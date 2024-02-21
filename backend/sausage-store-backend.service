@@ -1,0 +1,15 @@
+[Unit]
+Description=Sausage-store
+
+[Service]
+EnvironmentFile=/home/devops/db.conf
+User=devops
+Group=devops
+WorkingDirectory=/home/devops
+ExecStart=/usr/bin/java -jar sausage-store.jar 
+Restart=on-failure
+StandardOutput=file:/home/devops/sausage-store-backend.log
+
+[Install]
+WantedBy=multi-user.target
+

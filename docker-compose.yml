@@ -1,0 +1,62 @@
+version: "3.3"
+
+services:
+  backend-blue:
+    image: gitlab.praktikum-services.ru:5050/std-016-018/sausage-store/sausage-backend:latest
+    container_name: backend-blue
+    environment:
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL}
+      SPRING_FLYWAY_BASELINE-ON-MIGRATE: "true"
+      VIRTUAL_HOST: backend
+    healthcheck:
+      test: curl --fail -s http://localhost:8080/actuator/health
+      interval: 20s
+      timeout: 10s
+      retries: 6 
+    networks:
+      - sausage_network
+
+  backend-green:
+    image: gitlab.praktikum-services.ru:5050/std-016-018/sausage-store/sausage-backend:latest
+    container_name: backend-green
+    environment:
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL}
+      SPRING_FLYWAY_BASELINE-ON-MIGRATE: "true"
+      VIRTUAL_HOST: backend
+    healthcheck:
+      test: curl --fail -s http://localhost:8080/actuator/health
+      interval: 20s
+      timeout: 10s
+      retries: 6
+    networks:
+      - sausage_network
+
+  backend-report:
+    image: gitlab.praktikum-services.ru:5050/std-016-018/sausage-store/sausage-backend-report:latest
+    container_name: sausage-store-backend-report
+    environment:
+      DB: ${SPRING_DATA_MONGODB_URI}
+    networks:
+      - sausage_network
+
+  frontend:
+    image: gitlab.praktikum-services.ru:5050/std-016-018/sausage-store/sausage-frontend:latest
+    container_name: sausage-store-frontend
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    environment:
+      DEFAULT_HOST: backend
+    networks:
+      - sausage_network
+    ports:
+      - "80:80"
+
+networks:
+  sausage_network:
+    driver: bridge
+
+    

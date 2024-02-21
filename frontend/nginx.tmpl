@@ -1,0 +1,36 @@
+{{ range $host, $containers := groupBy $ "Env.VIRTUAL_HOST" }}
+upstream {{ $host }} {
+
+{{ range $index, $value := $containers }}
+    {{ with $address := index $value.Addresses 0 }}
+    server {{ $value.Hostname }}:{{ $address.Port }};
+    {{ end }}
+{{ end }}
+
+}
+
+proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=cache_zone:20m;
+
+server {
+
+  listen 80;
+
+  location / {
+    root   /usr/share/nginx/html;
+    index  index.html;
+    try_files $uri $uri/ /index.html;
+  }
+
+  location /api {
+      proxy_pass http://{{ $host }};
+      proxy_cache cache_zone;
+      proxy_cache_key $uri;
+      proxy_buffers 8 2m;
+      proxy_buffer_size 10m;
+      proxy_busy_buffers_size 10m;
+      proxy_cache_valid 200  1d;
+  }
+}
+
+{{ end }}
+

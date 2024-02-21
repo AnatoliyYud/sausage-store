@@ -1,0 +1,12 @@
+[Unit]
+Description=My sausage-store-frontend
+
+[Service]
+User=root
+WorkingDirectory=/home/devops/front
+ExecStart=http-server ./dist/frontend/ -p 80 --proxy http://localhost:8080
+Restart=on-failure
+StandardOutput=inherit
+
+[Install]
+WantedBy=multi-user.target

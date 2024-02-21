@@ -1,0 +1,153 @@
+include:
+  - project: 'templates/ci'
+    file: 'DockerInDockerTemplate.yml'
+  - template: Security/SAST.gitlab-ci.yml
+    
+stages:
+  - build
+  - test
+  - release
+  - container-test
+  - deploy
+
+variables:
+  VERSION: 1.0.${CI_PIPELINE_ID}
+  DOCKER_TLS_VERIFY: "false"
+
+build-backend:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.14.0-debug
+    entrypoint: [""]
+  script:
+    - echo SPRING_DATASOURCE_URL=${PSQL_URL} >> backend/.env
+    - echo SPRING_DATASOURCE_USERNAME=${PSQL_USERNAME} >> backend/.env
+    - echo SPRING_DATASOURCE_PASSWORD=${PSQL_PASSWORD} >> backend/.env
+    - echo SPRING_DATA_MONGODB_URI=${MONGODB_URI} >> backend/.env
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"},\"$(echo -n $CI_DEPENDENCY_PROXY_SERVER | awk -F[:] '{print $1}')\":{\"auth\":\"$(printf "%s:%s" ${CI_DEPENDENCY_PROXY_USER} "${CI_DEPENDENCY_PROXY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json 
+    - /kaniko/executor
+      --cache=true
+      --cache-repo $CI_REGISTRY_IMAGE
+      --no-push
+      --build-arg VERSION=$VERSION
+      --context "backend/"
+      --dockerfile "backend/Dockerfile"
+      --destination "$CI_REGISTRY_IMAGE/sausage-backend:$CI_COMMIT_SHA"
+  artifacts:
+    paths:
+      - backend/.env
+
+build-backend-spotbugs:
+  stage: build
+  script:
+    - cd backend
+    - mvn package
+  variables:
+    MAVEN_OPTS: "-Dmaven.repo.local=${CI_PROJECT_DIR}/.m2/repository"
+  artifacts:
+    paths:
+      - ${CI_PROJECT_DIR}/.m2/
+
+sonarqube-backend-sast:
+  stage: test
+  image: maven:3.8-openjdk-16
+  script:
+    - cd backend
+    - >
+      mvn verify sonar:sonar -Dsonar.qualitygate.wait=true
+      -Dsonar.projectKey="${SONAR_BACKEND_KEY}"
+      -Dsonar.host.url="${SONAR_URL}"
+      -Dsonar.login="${SONAR_BACKEND_TOKEN}"
+      -Dsonar.projectName="${SONAR_BACKEND_NAME}"
+
+spotbugs-sast:
+  dependencies:
+    - build-backend-spotbugs
+  needs:
+    - build-backend-spotbugs
+  stage: test
+  variables:
+    SECURE_LOG_LEVEL: "debug"
+    COMPILE: "false"
+    SAST_JAVA_VERSION: 11
+    MAVEN_REPO_PATH: ${CI_PROJECT_DIR}/.m2/repository
+
+semgrep-sast:
+  stage: test
+  rules:
+    - when: never
+nodejs-scan-sast:
+  stage: test
+  rules:
+    - when: never
+eslint-sast:
+  stage: test
+  rules:
+    - when: never
+
+upload-backend-latest:
+  stage: release
+  image:
+    name: gcr.io/kaniko-project/executor:v1.14.0-debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"},\"$(echo -n $CI_DEPENDENCY_PROXY_SERVER | awk -F[:] '{print $1}')\":{\"auth\":\"$(printf "%s:%s" ${CI_DEPENDENCY_PROXY_USER} "${CI_DEPENDENCY_PROXY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --cache=true
+      --cache-repo $CI_REGISTRY_IMAGE
+      --build-arg VERSION="$VERSION"
+      --context "backend/"
+      --dockerfile "backend/Dockerfile"
+      --destination "$CI_REGISTRY_IMAGE/sausage-backend:latest"
+
+api-test:
+  stage: container-test
+  dependencies:
+    - upload-backend-latest
+  needs:
+    - upload-backend-latest
+  image: curlimages/curl
+  services:
+    - name: $CI_REGISTRY_IMAGE/sausage-backend:latest
+      alias: docker-api
+      entrypoint: ["dumb-init", "java", "-jar", "-Dmyserver.bindPort=8080", "./sausage-store.jar"]
+  script:
+    - sleep 60
+    - curl http://docker-api:8080/api/products -i | grep 200
+  rules:
+    - when: never
+
+deploy-backend:
+  stage: deploy
+  image: vault:1.11.3
+  needs:
+    - build-backend
+    - upload-backend-latest
+  dependencies:
+    - build-backend
+  before_script:
+    - apk add openssh-client bash
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - scp ./backend/.env ${DEV_USER}@${DEV_HOST}:/home/${DEV_USER}/.env
+    - scp docker-compose.yml ${DEV_USER}@${DEV_HOST}:/home/${DEV_USER}/docker-compose.yml
+#    - export VAULT_TOKEN="$(vault write -field=token auth/jwt/login role=sausage-store jwt=$CI_JOB_JWT)"
+    - ssh ${DEV_USER}@${DEV_HOST}
+      "export "VERSION=${VERSION}";
+       export "CI_REGISTRY=${CI_REGISTRY}";
+       export "CI_REGISTRY_USER=${CI_REGISTRY_USER}";
+       export "CI_REGISTRY_PASSWORD=${CI_REGISTRY_PASSWORD}";
+       export "CI_REGISTRY_IMAGE=${CI_REGISTRY_IMAGE}";
+      /bin/bash -s " < ./backend/backend_docker_deploy.sh
+#       export "SPRING_DATASOURCE_PASSWORD=$(vault kv get -field=spring.datasource.password secret/sausage-store)";
+#       export "SPRING_DATASOURCE_USERNAME=$(vault kv get -field=spring.datasource.username secret/sausage-store)";
+#       export "SPRING_DATASOURCE_URL=$(vault kv get -field=spring.datasource.url secret/sausage-store)";
+#       export "SPRING_DATA_MONGODB_URI=$(vault kv get -field=spring.data.mongodb.uri secret/sausage-store)";
+#       export "SPRING_DATASOURCE_DRIVER_CLASS_NAME=$(vault kv get -field=spring.datasource.driver-class-name secret/sausage-store)";
